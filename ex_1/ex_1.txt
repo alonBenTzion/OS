@@ -1,0 +1,10 @@
+1. Create a directory "./welcome_dir_1" with permissions 0777
+2. Create a subdirectory "./welcome_dir_1/welcome_dir_2" with he same permissions
+3. Increase the data segment by 21k bytes
+4. Create "welcome_file.txt" with write only permission for user and read&write permissions for others and open it for editing
+5. Open "/etc/localtime" for reading only and by using 'O_CLOEXEC' the file will automatically been closed when a new process is executed
+6. Reads the content of "/etc/localtime" file
+7. close "/etc/localtime" file
+8. Write the string "welcome to OS_2023" to "welcome_file.txt" file
+9. close and delete "welcome_file.txt" file
+10. Remove the directories "welcome_dir_1" and "welcome_dir_2"
