@@ -13,8 +13,6 @@
    and -1 upon failure.
    */
 double osm_operation_time(unsigned int iterations);
-double test();
-
 
 /* Time measurement function for an empty function call.
    returns time in nano-seconds upon success,
