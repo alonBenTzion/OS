@@ -282,7 +282,7 @@ int uthread_block(int tid) {
         return -1;
     }
     if (running_thread_tid == tid) {
-        // a scheduling decision should be made
+        // a scheduling decision should be made TODO
     }
     // if not in ready state nothing will happen
     remove_from_ready_queue(tid);
