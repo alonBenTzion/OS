@@ -67,6 +67,7 @@ char **stacks;
 //char stack1[STACK_SIZE];
 sigjmp_buf env[MAX_THREAD_NUM];
 int threads_quantums[MAX_THREAD_NUM];
+int sleep_counters[MAX_THREAD_NUM];
 //Thread threads[MAX_THREAD_NUM];
 std::deque<int> ready_queue;
 int QUANTUM_USECS;
@@ -75,19 +76,34 @@ std::set<int> blocked_threads;
 int total_quantum;
 struct itimerval timer;
 struct sigaction sa = {0};
+sigset_t sig_set;
+
 void yield();
+
+void reset_timer() {
+    timer.it_value.tv_usec = QUANTUM_USECS; //#todo fix with interval
+}
+
 void jump_to_thread(int tid) {
     running_thread_tid = tid;
     siglongjmp(env[tid], 1);
 }
 
-void reset_timer(){
-    timer.it_value.tv_usec = QUANTUM_USECS;
+void time_up_handler(int sig) {
+    if (sig == SIGVTALRM) {
+        yield();
+    }
 }
 
-void time_up_handler(int sig){
-    if(sig==SIGVTALRM){
-        yield();
+
+void update_sleeping_counters() {
+    for (int i = 0; i < MAX_THREAD_NUM; i++) {
+        if (sleep_counters[i] > 0) {
+            if (sleep_counters[i] == 1) {
+                ready_queue.push_back(i);
+            }
+            sleep_counters[i] -= 1;
+        }
     }
 }
 
@@ -98,15 +114,11 @@ void yield() {
     int tid = ready_queue.front();
     ready_queue.pop_front();
     sigsetjmp(env[running_thread_tid], 1);
-    jump_to_thread(tid);
     threads_quantums[tid] += 1;
     total_quantum += 1;
+    update_sleeping_counters();
     reset_timer();
-    setitimer(ITIMER_VIRTUAL, &timer, NULL);
-    if (sigaction(SIGVTALRM, &sa, NULL) < 0)
-    {
-        printf("sigaction error.");
-    }
+    jump_to_thread(tid);
 
 }
 
@@ -147,12 +159,23 @@ int uthread_init(int quantum_usecs) {
     for (int i = 0; i < MAX_THREAD_NUM; i++) {
         stacks[i] = nullptr;
         threads_quantums[i] = 0;
+        sleep_counters[i] = 0;
     }
-    setup_thread(0, stacks[0],)
+    sigsetjmp(env[0], 1);
+    sigemptyset(&sig_set);
+    sigaddset(&sig_set, SIGVTALRM);
+
+    sa.sa_handler = &time_up_handler;
+    reset_timer();
+    setitimer(ITIMER_VIRTUAL, &timer, nullptr);
+    if (sigaction(SIGVTALRM, &sa, nullptr) < 0) {
+        printf("sigaction error.");
+    }
+
+
     QUANTUM_USECS = quantum_usecs;
     running_thread_tid = 0;
     total_quantum = 1;
-    sa.sa_handler = &time_up_handler;
 
 }
 
@@ -303,7 +326,16 @@ int uthread_resume(int tid) {
  *
  * @return On success, return 0. On failure, return -1.
 */
-int uthread_sleep(int num_quantums);
+int uthread_sleep(int num_quantums) {
+    if (running_thread_tid == 0) {
+        // error
+        return -1;
+    }
+    sleep_counters[running_thread_tid] = num_quantums;
+    yield();
+    return 0;
+
+}
 
 
 /**
