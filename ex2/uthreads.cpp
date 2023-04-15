@@ -73,20 +73,41 @@ int QUANTUM_USECS;
 int running_thread_tid;
 std::set<int> blocked_threads;
 int total_quantum;
-
+struct itimerval timer;
+struct sigaction sa = {0};
+void yield();
 void jump_to_thread(int tid) {
     running_thread_tid = tid;
     siglongjmp(env[tid], 1);
-    threads_quantums[tid] += 1;
-    total_quantum += 1;
+}
+
+void reset_timer(){
+    timer.it_value.tv_usec = QUANTUM_USECS;
+}
+
+void time_up_handler(int sig){
+    if(sig==SIGVTALRM){
+        yield();
+    }
 }
 
 /**
  * @brief Saves the current thread state, and jumps to the other thread.
  */
-void yield(int tid) {
+void yield() {
+    int tid = ready_queue.front();
+    ready_queue.pop_front();
     sigsetjmp(env[running_thread_tid], 1);
     jump_to_thread(tid);
+    threads_quantums[tid] += 1;
+    total_quantum += 1;
+    reset_timer();
+    setitimer(ITIMER_VIRTUAL, &timer, NULL);
+    if (sigaction(SIGVTALRM, &sa, NULL) < 0)
+    {
+        printf("sigaction error.");
+    }
+
 }
 
 void setup_thread(int tid, char *stack, thread_entry_point entry_point) {
@@ -125,11 +146,14 @@ int uthread_init(int quantum_usecs) {
     }
     for (int i = 0; i < MAX_THREAD_NUM; i++) {
         stacks[i] = nullptr;
+        threads_quantums[i] = 0;
     }
     setup_thread(0, stacks[0],)
     QUANTUM_USECS = quantum_usecs;
     running_thread_tid = 0;
     total_quantum = 1;
+    sa.sa_handler = &time_up_handler;
+
 }
 
 
@@ -199,8 +223,7 @@ int uthread_terminate(int tid) {
     };
     // if running
     if (running_thread_tid == tid) {
-        yield(ready_queue.front());
-        ready_queue.pop_front();
+        yield();
     } else {
         // if in ready - remove from queue
         remove_from_ready_queue(tid);
@@ -211,6 +234,7 @@ int uthread_terminate(int tid) {
 
     delete[] stacks[tid];
     stacks[tid] = nullptr;
+    threads_quantums[tid] = 0;
     // #TODO sigprocmask???
 
 
