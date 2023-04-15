@@ -1,0 +1,15 @@
+1. a. sigsetjmp saves the current location, CPU state and signal mask
+   siglongjmp goes to the saved location, restoring the state and the signal mask
+   b. sigsetjmp saves the current signal mask, and siglongjmp load the signal mask which the sigsetjmp save, so that's mean that if a signal is blocked after sigsetjmp, it will not be unblocked when siglongjmp is called to jump back to the saved location.
+
+2. application that switches between threads often - such as ML application which uses multiprocessing and multithreading. because in user level threads, switching between threads is cheaper (run time wise).
+
+3.  adventages:
+		1. isolation - each tab in its own proccess.
+	disadvantages:
+		1. high overhead - all operations require a kernel trap.
+		2. shared address space, memory, files - simple communication. 
+		3. proccess creation is slower than thread creation. 
+4. #TODO
+5. Real time refers to the actual time that passes in the physical world, while virtual time refers to the time that is simulated or artificially created in a virtual environment or computer system.
+example: farmville with a world simulation which has a time (sun mooves acording, seasons...)

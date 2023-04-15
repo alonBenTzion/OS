@@ -2,9 +2,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Set the run times for each function on each platform (in seconds)
-local_times = [3.275000, 2.081000, 170.355000]
-vm_times = [9.661000,31.200000, 869.030000]
-container_times = [3.525000,2.228000,170.366000]
+local_times = [0.594, 4.386, 483.51]
+vm_times = [0.511,12.564, 695.256]
+container_times = [0.27, 2.029, 480.017]
 
 # Set the names of the functions and platforms
 functions = ['Arithmetic_op', 'Function_call', 'Sys_call']
@@ -35,4 +35,4 @@ plt.title('Function Run Times(nano_s) on Different Platforms')
 plt.legend()
 
 # Save the plot
-plt.savefig("/Users/alonbentzion/Desktop/university/OS/ex1_plot.png")
+plt.savefig("/Users/roy/Desktop/ex1_plot.png")
