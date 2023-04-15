@@ -17,7 +17,8 @@
 #include <sys/time.h>
 #include <stdbool.h>
 #include "iostream"
-#include <queue>
+#include <deque>
+#include "set"
 
 #ifdef __x86_64__
 /* code for 64 bit Intel arch */
@@ -66,10 +67,10 @@ char **stacks;
 //char stack1[STACK_SIZE];
 sigjmp_buf env[MAX_THREAD_NUM];
 //Thread threads[MAX_THREAD_NUM];
-std::queue<int> ready_queue;
-int current_thread = -1;
+std::deque<int> ready_queue;
 int QUANTUM_USECS;
-
+int running_thread_tid;
+std::set<int> blocked_threads;
 
 void jump_to_thread(int tid) {
     current_thread = tid;
@@ -129,6 +130,7 @@ int uthread_init(int quantum_usecs) {
     }
     setup_thread(0, stacks[0],)
     QUANTUM_USECS = quantum_usecs;
+    running_thread_tid = 0;
 }
 
 
@@ -158,7 +160,7 @@ int uthread_spawn(thread_entry_point entry_point) {
                 return -1;
             }
             setup_thread(i, stacks[i], entry_point);
-            ready_queue.push(i);
+            ready_queue.push_back(i);
             return i;
         }
     }
@@ -166,6 +168,21 @@ int uthread_spawn(thread_entry_point entry_point) {
     return -1;
 }
 
+bool is_valid_thread(int tid){
+    if(tid<0|| tid>MAX_THREAD_NUM){
+        // error message
+        return false;
+    }
+    if(stacks[tid]== nullptr){
+        // error message
+        return false;
+    }
+    return true;
+}
+
+void remove_from_ready_queue(int tid){
+    ready_queue.erase(std::remove(ready_queue.begin(), ready_queue.end(),tid), ready_queue.end());
+}
 
 /**
  * @brief Terminates the thread with ID tid and deletes it from all relevant control structures.
@@ -177,7 +194,29 @@ int uthread_spawn(thread_entry_point entry_point) {
  * @return The function returns 0 if the thread was successfully terminated and -1 otherwise. If a thread terminates
  * itself or the main thread is terminated, the function does not return.
 */
-int uthread_terminate(int tid);
+int uthread_terminate(int tid){
+    if(!is_valid_thread(tid)){
+        return -1;
+    };
+    // if running ??
+    if(running_thread_tid == tid){
+        yield(); //#TODO fix
+    }
+    else{
+        // if in ready - remove from queue
+        remove_from_ready_queue(tid);
+        // if blocked
+        blocked_threads.erase(tid);
+    }
+
+
+
+    delete [] stacks[tid];
+    stacks[tid] = nullptr;
+    // #TODO sigprocmask???
+
+
+}
 
 
 /**
@@ -189,7 +228,26 @@ int uthread_terminate(int tid);
  *
  * @return On success, return 0. On failure, return -1.
 */
-int uthread_block(int tid);
+int uthread_block(int tid){
+    if(!is_valid_thread(tid)){
+        return -1;
+    }
+    if(tid ==0){
+        // error main thread
+        return -1;
+    }
+    if(running_thread_tid==tid){
+        // a scheduling decision should be made
+    }
+    // if not in ready state nothing will happen
+    remove_from_ready_queue(tid);
+    // if already in set nothing will happen
+    blocked_threads.insert(tid);
+    return 0;
+
+
+
+}
 
 
 /**
@@ -200,7 +258,15 @@ int uthread_block(int tid);
  *
  * @return On success, return 0. On failure, return -1.
 */
-int uthread_resume(int tid);
+int uthread_resume(int tid){
+    if(!is_valid_thread(tid)){
+        return -1;
+    }
+    if(blocked_threads.erase(tid)==1){
+        ready_queue.push_back(tid); //#todo check if succeeded??
+    }
+    return 0;
+}
 
 
 /**
