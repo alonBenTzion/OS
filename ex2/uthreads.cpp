@@ -66,28 +66,27 @@ address_t translate_address(address_t addr)
 char **stacks;
 //char stack1[STACK_SIZE];
 sigjmp_buf env[MAX_THREAD_NUM];
+int threads_quantums[MAX_THREAD_NUM];
 //Thread threads[MAX_THREAD_NUM];
 std::deque<int> ready_queue;
 int QUANTUM_USECS;
 int running_thread_tid;
 std::set<int> blocked_threads;
+int total_quantum;
 
 void jump_to_thread(int tid) {
-    current_thread = tid;
+    running_thread_tid = tid;
     siglongjmp(env[tid], 1);
+    threads_quantums[tid] += 1;
+    total_quantum += 1;
 }
 
 /**
  * @brief Saves the current thread state, and jumps to the other thread.
  */
-void yield(void) {
-    int ret_val = sigsetjmp(env[current_thread], 1);
-    printf("yield: ret_val=%d\n", ret_val);
-    bool did_just_save_bookmark = ret_val == 0;
-//    bool did_jump_from_another_thread = ret_val != 0;
-    if (did_just_save_bookmark) {
-        jump_to_thread(1 - current_thread);
-    }
+void yield(int tid) {
+    sigsetjmp(env[running_thread_tid], 1);
+    jump_to_thread(tid);
 }
 
 void setup_thread(int tid, char *stack, thread_entry_point entry_point) {
@@ -100,7 +99,6 @@ void setup_thread(int tid, char *stack, thread_entry_point entry_point) {
     (env[tid]->__jmpbuf)[JB_PC] = translate_address(pc);
     sigemptyset(&env[tid]->__saved_mask);
 }
-
 
 
 /**
@@ -131,6 +129,7 @@ int uthread_init(int quantum_usecs) {
     setup_thread(0, stacks[0],)
     QUANTUM_USECS = quantum_usecs;
     running_thread_tid = 0;
+    total_quantum = 1;
 }
 
 
@@ -147,7 +146,7 @@ int uthread_init(int quantum_usecs) {
  * @return On success, return the ID of the created thread. On failure, return -1.
 */
 int uthread_spawn(thread_entry_point entry_point) {
-    if(entry_point== nullptr){
+    if (entry_point == nullptr) {
         //#TODO error message
         return -1;
     }
@@ -168,20 +167,20 @@ int uthread_spawn(thread_entry_point entry_point) {
     return -1;
 }
 
-bool is_valid_thread(int tid){
-    if(tid<0|| tid>MAX_THREAD_NUM){
+bool is_valid_thread(int tid) {
+    if (tid < 0 || tid > MAX_THREAD_NUM) {
         // error message
         return false;
     }
-    if(stacks[tid]== nullptr){
+    if (stacks[tid] == nullptr) {
         // error message
         return false;
     }
     return true;
 }
 
-void remove_from_ready_queue(int tid){
-    ready_queue.erase(std::remove(ready_queue.begin(), ready_queue.end(),tid), ready_queue.end());
+void remove_from_ready_queue(int tid) {
+    ready_queue.erase(std::remove(ready_queue.begin(), ready_queue.end(), tid), ready_queue.end());
 }
 
 /**
@@ -194,15 +193,15 @@ void remove_from_ready_queue(int tid){
  * @return The function returns 0 if the thread was successfully terminated and -1 otherwise. If a thread terminates
  * itself or the main thread is terminated, the function does not return.
 */
-int uthread_terminate(int tid){
-    if(!is_valid_thread(tid)){
+int uthread_terminate(int tid) {
+    if (!is_valid_thread(tid)) {
         return -1;
     };
-    // if running ??
-    if(running_thread_tid == tid){
-        yield(); //#TODO fix
-    }
-    else{
+    // if running
+    if (running_thread_tid == tid) {
+        yield(ready_queue.front());
+        ready_queue.pop_front();
+    } else {
         // if in ready - remove from queue
         remove_from_ready_queue(tid);
         // if blocked
@@ -210,8 +209,7 @@ int uthread_terminate(int tid){
     }
 
 
-
-    delete [] stacks[tid];
+    delete[] stacks[tid];
     stacks[tid] = nullptr;
     // #TODO sigprocmask???
 
@@ -228,15 +226,15 @@ int uthread_terminate(int tid){
  *
  * @return On success, return 0. On failure, return -1.
 */
-int uthread_block(int tid){
-    if(!is_valid_thread(tid)){
+int uthread_block(int tid) {
+    if (!is_valid_thread(tid)) {
         return -1;
     }
-    if(tid ==0){
+    if (tid == 0) {
         // error main thread
         return -1;
     }
-    if(running_thread_tid==tid){
+    if (running_thread_tid == tid) {
         // a scheduling decision should be made
     }
     // if not in ready state nothing will happen
@@ -244,7 +242,6 @@ int uthread_block(int tid){
     // if already in set nothing will happen
     blocked_threads.insert(tid);
     return 0;
-
 
 
 }
@@ -258,11 +255,11 @@ int uthread_block(int tid){
  *
  * @return On success, return 0. On failure, return -1.
 */
-int uthread_resume(int tid){
-    if(!is_valid_thread(tid)){
+int uthread_resume(int tid) {
+    if (!is_valid_thread(tid)) {
         return -1;
     }
-    if(blocked_threads.erase(tid)==1){
+    if (blocked_threads.erase(tid) == 1) {
         ready_queue.push_back(tid); //#todo check if succeeded??
     }
     return 0;
@@ -290,7 +287,9 @@ int uthread_sleep(int num_quantums);
  *
  * @return The ID of the calling thread.
 */
-int uthread_get_tid();
+int uthread_get_tid() {
+    return running_thread_tid;
+}
 
 
 /**
@@ -301,7 +300,9 @@ int uthread_get_tid();
  *
  * @return The total number of quantums.
 */
-int uthread_get_total_quantums();
+int uthread_get_total_quantums() {
+    return total_quantum;
+}
 
 
 /**
@@ -313,4 +314,9 @@ int uthread_get_total_quantums();
  *
  * @return On success, return the number of quantums of the thread with ID tid. On failure, return -1.
 */
-int uthread_get_quantums(int tid);
+int uthread_get_quantums(int tid) {
+    if (!is_valid_thread(tid)) {
+        return -1;
+    }
+    return threads_quantums[tid];
+}
