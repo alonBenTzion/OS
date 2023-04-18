@@ -3,35 +3,38 @@
 //
 
 #include "uthreads.h"
-
-/*
- * sigsetjmp/siglongjmp demo program.
- * Hebrew University OS course.
- * Author: OS, os@cs.huji.ac.il
- */
-
 #include <stdio.h>
 #include <setjmp.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/time.h>
 #include <stdbool.h>
-#include "iostream"
+#include <iostream>
 #include <deque>
 #include "set"
+
+#define LIB_ERROR "thread library error: "
+#define SYS_ERROR "system error: "
+#define INVALID_INPUT "invalid input"
+#define INVALID_CALL "invalid sleep call from main thread"
+#define INVALID_BLOCK "invalid block call"
+#define INVALID_RESUME "invalid resume call"
+#define INVALID_SPAWN "invalid spawn"
+#define INVALID_TERM "invalid termination"
+#define INVALID_TID "invalid thread id"
+#define FAILED_ALLOC "failed allocation"
 
 #ifdef __x86_64__
 /* code for 64 bit Intel arch */
 
 typedef unsigned long address_t;
-
-
 #define JB_SP 6
 #define JB_PC 7
 
 /* A translation is required when using an address of a variable.
    Use this as a black box in your code. */
-address_t translate_address(address_t addr) {
+address_t translate_address(address_t addr)
+{
     address_t ret;
     asm volatile("xor    %%fs:0x30,%0\n"
                  "rol    $0x11,%0\n"
@@ -55,8 +58,8 @@ address_t translate_address(address_t addr)
     address_t ret;
     asm volatile("xor    %%gs:0x18,%0\n"
                  "rol    $0x9,%0\n"
-    : "=g" (ret)
-    : "0" (addr));
+            : "=g" (ret)
+            : "0" (addr));
     return ret;
 }
 
@@ -64,11 +67,9 @@ address_t translate_address(address_t addr)
 #endif
 
 char **stacks;
-//char stack1[STACK_SIZE];
 sigjmp_buf env[MAX_THREAD_NUM];
 int threads_quantums[MAX_THREAD_NUM];
 int sleep_counters[MAX_THREAD_NUM];
-//Thread threads[MAX_THREAD_NUM];
 std::deque<int> ready_queue;
 int QUANTUM_USECS;
 int running_thread_tid;
@@ -83,18 +84,38 @@ void yield();
 void reset_timer() {
     timer.it_value.tv_usec = QUANTUM_USECS; //#todo fix with interval
 }
+void remove_from_ready_queue(int tid)
+{
+    ready_queue.erase(std::remove(ready_queue.begin(), ready_queue.end(), tid), ready_queue.end());
+}
 
-void jump_to_thread(int tid) {
+void jump_to_thread(int tid)
+{
     running_thread_tid = tid;
     siglongjmp(env[tid], 1);
 }
 
-void time_up_handler(int sig) {
-    if (sig == SIGVTALRM) {
+void time_up_handler(int sig)
+{
+    if (sig == SIGVTALRM)
+    {
         yield();
     }
 }
 
+void free_before_exit()
+{
+    for (int i=0; i<MAX_THREAD_NUM; i++)
+    {
+        if (stacks[i] != nullptr)
+        {
+            delete[] stacks[i];
+            stacks[i] = nullptr;
+        }
+    }
+    delete [] stacks;
+
+}
 
 void update_sleeping_counters() {
     for (int i = 0; i < MAX_THREAD_NUM; i++) {
@@ -111,6 +132,7 @@ void update_sleeping_counters() {
  * @brief Saves the current thread state, and jumps to the other thread.
  */
 void yield() {
+    sigprocmask(SIG_BLOCK, &sig_set, nullptr);
     int tid = ready_queue.front();
     ready_queue.pop_front();
     sigsetjmp(env[running_thread_tid], 1);
@@ -119,18 +141,22 @@ void yield() {
     update_sleeping_counters();
     reset_timer();
     jump_to_thread(tid);
+    sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
 
 }
 
 void setup_thread(int tid, char *stack, thread_entry_point entry_point) {
     // initializes env[tid] to use the right stack, and to run from the function 'entry_point', when we'll use
     // siglongjmp to jump into the thread.
+
     address_t sp = (address_t) stack + STACK_SIZE - sizeof(address_t);
     address_t pc = (address_t) entry_point;
     sigsetjmp(env[tid], 1);
     (env[tid]->__jmpbuf)[JB_SP] = translate_address(sp);
     (env[tid]->__jmpbuf)[JB_PC] = translate_address(pc);
     sigemptyset(&env[tid]->__saved_mask);
+    ready_queue.push_back(tid);
+
 }
 
 
@@ -148,13 +174,14 @@ void setup_thread(int tid, char *stack, thread_entry_point entry_point) {
 */
 int uthread_init(int quantum_usecs) {
     if (quantum_usecs < 1) {
-        std::cerr << "error message" << std::endl;
+        std::cerr << LIB_ERROR << INVALID_INPUT  << std::endl;
         return -1;
     }
     stacks = new char *[MAX_THREAD_NUM];
     if (stacks == nullptr) {
-        std::cerr << "error message" << std::endl;
-        return -1;
+        std::cerr << SYS_ERROR << FAILED_ALLOC << std::endl;
+        free_before_exit();
+        exit(EXIT_FAILURE);
     }
     for (int i = 0; i < MAX_THREAD_NUM; i++) {
         stacks[i] = nullptr;
@@ -194,7 +221,7 @@ int uthread_init(int quantum_usecs) {
 */
 int uthread_spawn(thread_entry_point entry_point) {
     if (entry_point == nullptr) {
-        //#TODO error message
+        std::cerr << "Error message: Invalid entry_point function" << std::endl;
         return -1;
     }
     // check the limit
@@ -202,15 +229,17 @@ int uthread_spawn(thread_entry_point entry_point) {
         if (stacks[i] == nullptr) {
             stacks[i] = new char[STACK_SIZE];
             if (stacks[i] == nullptr) {
-                //#TODO allocation error message
-                return -1;
+                std::cerr << SYS_ERROR << FAILED_ALLOC << std::endl;
+                free_before_exit();
+                exit(EXIT_FAILURE);
             }
+            sigprocmask(SIG_BLOCK, &sig_set, nullptr);
             setup_thread(i, stacks[i], entry_point);
-            ready_queue.push_back(i);
+            sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
             return i;
         }
     }
-    // #todo message limit num of threads
+    std::cerr << "Error message: Maximum number of threads are exists" << std::endl;
     return -1;
 }
 
@@ -226,9 +255,7 @@ bool is_valid_thread(int tid) {
     return true;
 }
 
-void remove_from_ready_queue(int tid) {
-    ready_queue.erase(std::remove(ready_queue.begin(), ready_queue.end(), tid), ready_queue.end());
-}
+
 
 /**
  * @brief Terminates the thread with ID tid and deletes it from all relevant control structures.
@@ -247,12 +274,14 @@ int uthread_terminate(int tid) {
     // if running
     if (running_thread_tid == tid) {
         yield();
-    } else {
-        // if in ready - remove from queue
-        remove_from_ready_queue(tid);
-        // if blocked
-        blocked_threads.erase(tid);
     }
+    //TODO: why else?
+//    else {
+    // if in ready - remove from queue
+    remove_from_ready_queue(tid);
+    // if blocked
+    blocked_threads.erase(tid);
+//    }
 
 
     delete[] stacks[tid];
@@ -372,6 +401,7 @@ int uthread_get_total_quantums() {
 */
 int uthread_get_quantums(int tid) {
     if (!is_valid_thread(tid)) {
+        std::cerr << "Error message: Invalid tid" << std::endl;
         return -1;
     }
     return threads_quantums[tid];
