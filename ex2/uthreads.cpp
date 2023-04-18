@@ -33,8 +33,7 @@ typedef unsigned long address_t;
 
 /* A translation is required when using an address of a variable.
    Use this as a black box in your code. */
-address_t translate_address(address_t addr)
-{
+address_t translate_address(address_t addr) {
     address_t ret;
     asm volatile("xor    %%fs:0x30,%0\n"
                  "rol    $0x11,%0\n"
@@ -71,56 +70,55 @@ sigjmp_buf env[MAX_THREAD_NUM];
 int threads_quantums[MAX_THREAD_NUM];
 int sleep_counters[MAX_THREAD_NUM];
 std::deque<int> ready_queue;
-int QUANTUM_USECS;
 int running_thread_tid;
 std::set<int> blocked_threads;
-int total_quantum;
 struct itimerval timer;
 struct sigaction sa = {0};
 sigset_t sig_set;
 
-void yield();
+void yield(bool insert_to_ready);
 
-void reset_timer() {
-    timer.it_value.tv_usec = QUANTUM_USECS; //#todo fix with interval
+bool is_valid_thread(int tid) {
+    if (tid < 0 || tid > MAX_THREAD_NUM) {
+        // error message
+        return false;
+    }
+    if (stacks[tid] == nullptr) {
+        // error message
+        return false;
+    }
+    return true;
 }
-void remove_from_ready_queue(int tid)
-{
+
+void remove_from_ready_queue(int tid) {
     ready_queue.erase(std::remove(ready_queue.begin(), ready_queue.end(), tid), ready_queue.end());
 }
 
-void jump_to_thread(int tid)
-{
+void jump_to_thread(int tid) {
     running_thread_tid = tid;
     siglongjmp(env[tid], 1);
 }
 
-void time_up_handler(int sig)
-{
-    if (sig == SIGVTALRM)
-    {
-        yield();
-    }
+void time_up_handler(int sig) {
+    yield(true);
 }
 
-void free_before_exit()
-{
-    for (int i=0; i<MAX_THREAD_NUM; i++)
-    {
-        if (stacks[i] != nullptr)
-        {
+void free_before_exit() {
+    for (int i = 0; i < MAX_THREAD_NUM; i++) {
+        if (stacks[i] != nullptr) {
             delete[] stacks[i];
             stacks[i] = nullptr;
         }
     }
-    delete [] stacks;
+    delete[] stacks;
 
 }
 
 void update_sleeping_counters() {
     for (int i = 0; i < MAX_THREAD_NUM; i++) {
         if (sleep_counters[i] > 0) {
-            if (sleep_counters[i] == 1) {
+            // if finished sleeping and not blocked
+            if ((sleep_counters[i] == 1) && (blocked_threads.find(i) == blocked_threads.end())) {
                 ready_queue.push_back(i);
             }
             sleep_counters[i] -= 1;
@@ -131,18 +129,16 @@ void update_sleeping_counters() {
 /**
  * @brief Saves the current thread state, and jumps to the other thread.
  */
-void yield() {
-    sigprocmask(SIG_BLOCK, &sig_set, nullptr);
+void yield(bool insert_to_ready) {
+    if (insert_to_ready) {
+        ready_queue.push_back(running_thread_tid);
+    }
     int tid = ready_queue.front();
     ready_queue.pop_front();
     sigsetjmp(env[running_thread_tid], 1);
     threads_quantums[tid] += 1;
-    total_quantum += 1;
     update_sleeping_counters();
-    reset_timer();
     jump_to_thread(tid);
-    sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
-
 }
 
 void setup_thread(int tid, char *stack, thread_entry_point entry_point) {
@@ -159,6 +155,38 @@ void setup_thread(int tid, char *stack, thread_entry_point entry_point) {
 
 }
 
+void init_timer(int quantum_usecs) {
+    sa.sa_handler = &time_up_handler;
+    if (sigaction(SIGVTALRM, &sa, nullptr) < 0) {
+        printf("sigaction error.");
+    }
+
+    // Configure the timer to expire after quantum_usecs ... */
+    timer.it_value.tv_sec = quantum_usecs / 1000000;        // first time interval, seconds part
+    timer.it_value.tv_usec = quantum_usecs % 1000000;        // first time interval, microseconds part
+
+    // configure the timer to expire every quantum_usecs after that.
+    timer.it_interval.tv_sec = quantum_usecs / 1000000;    // following time intervals, seconds part
+    timer.it_interval.tv_usec = quantum_usecs % 1000000;    // following time intervals, microseconds part
+
+    if (setitimer(ITIMER_VIRTUAL, &timer, nullptr)) {
+        printf("setitimer error.");
+    }
+}
+
+void init_ds() {
+    stacks = new char *[MAX_THREAD_NUM];
+    if (stacks == nullptr) {
+        std::cerr << SYS_ERROR << FAILED_ALLOC << std::endl;
+        free_before_exit();
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < MAX_THREAD_NUM; i++) {
+        stacks[i] = nullptr;
+        threads_quantums[i] = 0;
+        sleep_counters[i] = 0;
+    }
+}
 
 /**
  * @brief initializes the thread library.
@@ -174,36 +202,23 @@ void setup_thread(int tid, char *stack, thread_entry_point entry_point) {
 */
 int uthread_init(int quantum_usecs) {
     if (quantum_usecs < 1) {
-        std::cerr << LIB_ERROR << INVALID_INPUT  << std::endl;
+        std::cerr << LIB_ERROR << INVALID_INPUT << std::endl;
         return -1;
     }
-    stacks = new char *[MAX_THREAD_NUM];
-    if (stacks == nullptr) {
-        std::cerr << SYS_ERROR << FAILED_ALLOC << std::endl;
-        free_before_exit();
-        exit(EXIT_FAILURE);
-    }
-    for (int i = 0; i < MAX_THREAD_NUM; i++) {
-        stacks[i] = nullptr;
-        threads_quantums[i] = 0;
-        sleep_counters[i] = 0;
-    }
+    init_ds();
+
     sigsetjmp(env[0], 1);
+    sigemptyset(&env[0]->__saved_mask);
+
     sigemptyset(&sig_set);
     sigaddset(&sig_set, SIGVTALRM);
 
-    sa.sa_handler = &time_up_handler;
-    reset_timer();
-    setitimer(ITIMER_VIRTUAL, &timer, nullptr);
-    if (sigaction(SIGVTALRM, &sa, nullptr) < 0) {
-        printf("sigaction error.");
-    }
+    init_timer(quantum_usecs);
 
 
-    QUANTUM_USECS = quantum_usecs;
     running_thread_tid = 0;
-    total_quantum = 1;
-
+    threads_quantums[0] += 1;
+    return 0;
 }
 
 
@@ -220,11 +235,13 @@ int uthread_init(int quantum_usecs) {
  * @return On success, return the ID of the created thread. On failure, return -1.
 */
 int uthread_spawn(thread_entry_point entry_point) {
+    sigprocmask(SIG_BLOCK, &sig_set, nullptr);
     if (entry_point == nullptr) {
         std::cerr << "Error message: Invalid entry_point function" << std::endl;
+        sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
         return -1;
     }
-    // check the limit
+    // check the limit, allocate stack and setup the new thread
     for (int i = 0; i < MAX_THREAD_NUM; i++) {
         if (stacks[i] == nullptr) {
             stacks[i] = new char[STACK_SIZE];
@@ -233,28 +250,15 @@ int uthread_spawn(thread_entry_point entry_point) {
                 free_before_exit();
                 exit(EXIT_FAILURE);
             }
-            sigprocmask(SIG_BLOCK, &sig_set, nullptr);
             setup_thread(i, stacks[i], entry_point);
             sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
             return i;
         }
     }
+    sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
     std::cerr << "Error message: Maximum number of threads are exists" << std::endl;
     return -1;
 }
-
-bool is_valid_thread(int tid) {
-    if (tid < 0 || tid > MAX_THREAD_NUM) {
-        // error message
-        return false;
-    }
-    if (stacks[tid] == nullptr) {
-        // error message
-        return false;
-    }
-    return true;
-}
-
 
 
 /**
@@ -268,28 +272,31 @@ bool is_valid_thread(int tid) {
  * itself or the main thread is terminated, the function does not return.
 */
 int uthread_terminate(int tid) {
+    sigprocmask(SIG_BLOCK, &sig_set, nullptr);
     if (!is_valid_thread(tid)) {
+        sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
         return -1;
-    };
+    }
+    if (tid == 0) {
+        free_before_exit();
+        // #TODO err
+        exit(EXIT_SUCCESS);
+    }
     // if running
     if (running_thread_tid == tid) {
-        yield();
+        yield(false);
+    } else {
+        // if in ready - remove from queue
+        remove_from_ready_queue(tid);
+        // if blocked
+        blocked_threads.erase(tid);
     }
-    //TODO: why else?
-//    else {
-    // if in ready - remove from queue
-    remove_from_ready_queue(tid);
-    // if blocked
-    blocked_threads.erase(tid);
-//    }
-
 
     delete[] stacks[tid];
     stacks[tid] = nullptr;
     threads_quantums[tid] = 0;
-    // #TODO sigprocmask???
-
-
+    sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
+    return 0;
 }
 
 
@@ -303,23 +310,25 @@ int uthread_terminate(int tid) {
  * @return On success, return 0. On failure, return -1.
 */
 int uthread_block(int tid) {
+    sigprocmask(SIG_BLOCK, &sig_set, nullptr);
     if (!is_valid_thread(tid)) {
+        sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
         return -1;
     }
     if (tid == 0) {
-        // error main thread
+        // TODO error main thread
+        sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
         return -1;
     }
     if (running_thread_tid == tid) {
-        // a scheduling decision should be made TODO
+        yield(false);
     }
     // if not in ready state nothing will happen
     remove_from_ready_queue(tid);
     // if already in set nothing will happen
     blocked_threads.insert(tid);
+    sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
     return 0;
-
-
 }
 
 
@@ -332,12 +341,16 @@ int uthread_block(int tid) {
  * @return On success, return 0. On failure, return -1.
 */
 int uthread_resume(int tid) {
+    sigprocmask(SIG_BLOCK, &sig_set, nullptr);
     if (!is_valid_thread(tid)) {
+        sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
         return -1;
     }
-    if (blocked_threads.erase(tid) == 1) {
+    //if blocked and not sleep
+    if (blocked_threads.erase(tid) == 1 && sleep_counters[tid] == 0) {
         ready_queue.push_back(tid); //#todo check if succeeded??
     }
+    sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
     return 0;
 }
 
@@ -356,12 +369,14 @@ int uthread_resume(int tid) {
  * @return On success, return 0. On failure, return -1.
 */
 int uthread_sleep(int num_quantums) {
+    sigprocmask(SIG_BLOCK, &sig_set, nullptr);
     if (running_thread_tid == 0) {
         // error
         return -1;
     }
     sleep_counters[running_thread_tid] = num_quantums;
-    yield();
+    yield(false);
+    sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
     return 0;
 
 }
@@ -386,6 +401,12 @@ int uthread_get_tid() {
  * @return The total number of quantums.
 */
 int uthread_get_total_quantums() {
+    sigprocmask(SIG_BLOCK, &sig_set, nullptr);
+    int total_quantum = 0;
+    for (auto i: threads_quantums) {
+        total_quantum += i;
+    }
+    sigprocmask(SIG_UNBLOCK, &sig_set, nullptr);
     return total_quantum;
 }
 
